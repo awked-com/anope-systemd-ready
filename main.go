@@ -24,11 +24,11 @@ type syncState struct {
 	ready  bool
 }
 
-var prefix = regexp.MustCompile(`^\[[^\]]+\] `)
+var logPrefix = regexp.MustCompile(`^\[[^\]]+\] `)
 var serverEvent = regexp.MustCompile(`^SERVER: (\S+) \(.*\) (.*)$`)
 
 func (s *syncState) consume(message string) {
-	message = prefix.ReplaceAllString(message, "")
+	message = logPrefix.ReplaceAllString(message, "")
 	m := serverEvent.FindStringSubmatch(message)
 	if m != nil {
 		if m[2] == "has connected to the network (uplinked to no uplink)" {
@@ -74,15 +74,32 @@ func (s *syncState) consumeJournal(data []byte, announced bool) (string, error) 
 	return cursor, nil
 }
 
-func run(args ...string) ([]byte, []byte, error) {
+func readJournal(unit, invocation, cursor string) ([]byte, error) {
+	args := []string{
+		"--unit=" + unit,
+		"_SYSTEMD_INVOCATION_ID=" + invocation,
+		"--output=json",
+		"--quiet",
+		"--no-pager",
+		"--grep=SERVER:|Attempting to connect to uplink|Lost connection from uplink|Unable to connect to uplink",
+	}
+	if cursor != "" {
+		args = append(args, "--after-cursor="+cursor)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c := exec.CommandContext(ctx, args[0], args[1:]...)
+	command := exec.CommandContext(ctx, "journalctl", args...)
 	var stderr bytes.Buffer
-	c.Stderr = &stderr
-	b, e := c.Output()
-	return b, stderr.Bytes(), e
+	command.Stderr = &stderr
+	data, err := command.Output()
+	var exit *exec.ExitError
+	// journalctl exits with status 1 when the grep filter finds no entries.
+	if (err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1)) || stderr.Len() > 0 {
+		return nil, errors.New("cannot read Anope synchronization events")
+	}
+	return data, nil
 }
 
 func activeInvocation(unit string) (string, error) {
@@ -120,9 +137,9 @@ func monitor(unit string) error {
 	state := syncState{}
 	announced := false
 	for {
-		current, e := activeInvocation(unit)
-		if e != nil {
-			return e
+		current, err := activeInvocation(unit)
+		if err != nil {
+			return err
 		}
 
 		if current != invocation {
@@ -136,37 +153,23 @@ func monitor(unit string) error {
 		}
 
 		if invocation != "" {
-			args := []string{
-				"journalctl",
-				"--unit=" + unit,
-				"_SYSTEMD_INVOCATION_ID=" + invocation,
-				"--output=json",
-				"--quiet",
-				"--no-pager",
-				"--grep=SERVER:|Attempting to connect to uplink|Lost connection from uplink|Unable to connect to uplink",
-			}
-			if cursor != "" {
-				args = append(args, "--after-cursor="+cursor)
+			data, err := readJournal(unit, invocation, cursor)
+			if err != nil {
+				return err
 			}
 
-			b, stderr, e := run(args...)
-			var exit *exec.ExitError
-			if (e != nil && (!errors.As(e, &exit) || exit.ExitCode() != 1)) || len(stderr) > 0 {
-				return errors.New("cannot read Anope synchronization events")
-			}
-
-			latest, e := state.consumeJournal(b, announced)
-			if e != nil {
-				return e
+			latest, err := state.consumeJournal(data, announced)
+			if err != nil {
+				return err
 			}
 			if latest != "" {
 				cursor = latest
 			}
 		}
 
-		current, e = activeInvocation(unit)
-		if e != nil {
-			return e
+		current, err = activeInvocation(unit)
+		if err != nil {
+			return err
 		}
 
 		ready := invocation != "" && state.ready && current == invocation
@@ -175,15 +178,15 @@ func monitor(unit string) error {
 		}
 
 		if ready && !announced {
-			if e = notify("READY=1"); e != nil {
-				return e
+			if err := notify("READY=1"); err != nil {
+				return err
 			}
 
 			announced = true
 		}
 
-		if e = notify("WATCHDOG=1"); e != nil {
-			return e
+		if err := notify("WATCHDOG=1"); err != nil {
+			return err
 		}
 
 		time.Sleep(time.Second)

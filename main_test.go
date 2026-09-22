@@ -5,10 +5,45 @@ import (
 	"errors"
 	"flag"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestReadJournal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		script  string
+		want    string
+		wantErr bool
+	}{
+		{name: "events", script: "printf events", want: "events"},
+		{name: "no matches", script: "exit 1"},
+		{name: "failed", script: "printf private-log-value; exit 2", wantErr: true},
+		{name: "diagnostic", script: "printf private-log-value >&2", wantErr: true},
+		{name: "failed with diagnostic", script: "printf private-log-value >&2; exit 1", wantErr: true},
+		{name: "missing command", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			t.Setenv("PATH", bin)
+			if tc.script != "" {
+				if err := os.WriteFile(filepath.Join(bin, "journalctl"), []byte("#!/bin/sh\n"+tc.script+"\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := readJournal("anope.service", "invocation", "")
+			if string(got) != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("journal = %q, err = %v", got, err)
+			}
+			if err != nil && err.Error() != "cannot read Anope synchronization events" {
+				t.Fatalf("journal diagnostics exposed: %v", err)
+			}
+		})
+	}
+}
 
 func TestNotifications(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", "")
