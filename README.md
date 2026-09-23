@@ -37,7 +37,7 @@ with status 1.
 
 Install the binary at `/usr/local/bin/anope-systemd-ready`, create an
 `anope-ready` system account, and adapt this unit to your service and account
-configuration. The account needs access to the system bus and journal:
+configuration:
 
 ```ini
 [Unit]
@@ -68,7 +68,6 @@ Consumer services that must stop when this readiness service stops can use
 For actions triggered by readiness, add `ExecStartPost=` to the monitor's unit;
 `Type=notify` runs it after `READY=1`. Pair it with an idempotent `ExecStopPost=`
 that reverses the action after startup failure or monitor exit. Configure hook
-permissions in the consuming unit; the monitor performs no deployment or network
-changes.
+permissions in the consuming unit.
 
 Automatic restarts can announce readiness again after successful resynchronization.
